@@ -2,21 +2,24 @@
 
 #include <ATen/ATen.h>
 #include <ATen/cuda/CUDAContext.h>
-#include <ATen/TensorUtils.h>
-#include <ATen/NativeFunctions.h>
-#include <ATen/WrapDimUtils.h>
-#include <THC/THCTensorMathReduce.cuh>
-#include <THC/THCTensorSort.cuh>
-#include <THC/THCThrustAllocator.cuh>
+//#include <ATen/TensorUtils.h>
+//#include <ATen/NativeFunctions.h>
+//#include <ATen/WrapDimUtils.h>
+//#include <THC/THCTensorMathReduce.cuh>
+//#include <THC/THCTensorSort.cuh>
+//#include <THC/THCThrustAllocator.cuh>
 
 #include <ATen/AccumulateType.h>
 #include <ATen/cuda/NumericLimits.cuh>
-#include <type_traits>
+//#include <type_traits>
 
-namespace at {
-namespace native {
+#include <THC/THC.h>
+#include <THC/THCGeneral.h>
+#include <THC/THCThrustAllocator.cuh>
 
-namespace {
+using Tensor = at::Tensor;
+using ScalarType = at::ScalarType;
+using at::acc_type;
 
 template<typename T, typename AccumT, typename OutT>
 struct LogSoftMaxForwardEpilogue {
@@ -483,7 +486,7 @@ Tensor host_softmax(const Tensor & input_, const int64_t dim_, const bool half_t
   Tensor output = half_to_float ? at::empty_like(input, input.options().dtype(ScalarType::Float)) : at::empty_like(input);
   static_assert(std::is_same<acc_type<at::Half, true>, float>::value, "accscalar_t for half should be float");
   if (input.dim() == 0) input = input.view(1);
-  int64_t dim = maybe_wrap_dim(dim_, input.dim());
+  int64_t dim = at::maybe_wrap_dim(dim_, input.dim());
   AT_CHECK(dim >=0 && dim < input.dim(), "dim must be non-negative and less than input dimensions");
   int64_t outer_size = 1;
   int64_t dim_size = input.size(dim);
@@ -551,7 +554,7 @@ Tensor host_softmax(const Tensor & input_, const int64_t dim_, const bool half_t
 
 template<template<typename, typename, typename> class Epilogue>
 Tensor host_softmax_backward(const Tensor &grad_, const Tensor &output_, int64_t dim_, bool half_to_float){
-  int64_t dim = maybe_wrap_dim(dim_, grad_.dim());
+  int64_t dim = at::maybe_wrap_dim(dim_, grad_.dim());
   Tensor gI = half_to_float ? at::empty_like(grad_, grad_.options().dtype(ScalarType::Half)) : at::empty_like(grad_);
   if (grad_.numel() == 0) {
     return gI;
@@ -622,7 +625,6 @@ Tensor host_softmax_backward(const Tensor &grad_, const Tensor &output_, int64_t
   THCudaCheck(cudaGetLastError());
   return gI;
 }
-}
 
 Tensor log_softmax_cuda(const Tensor &input, const int64_t dim, const bool half_to_float){
   return host_softmax<LogSoftMaxForwardEpilogue>(input, dim, half_to_float);
@@ -647,8 +649,5 @@ Tensor softmax_backward_cuda(const Tensor &grad, const Tensor &output, int64_t d
   }
   Tensor tmp = grad * output;
   return host_softmax_backward<SoftMaxBackwardEpilogue>(tmp, output, dim, half_to_float);
-}
-
-}
 }
 
