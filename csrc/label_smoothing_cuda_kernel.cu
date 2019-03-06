@@ -641,6 +641,48 @@ cunn_SoftMaxBackward(scalar_t *gradInput, outscalar_t *output, outscalar_t *grad
     gradInput[offset] = epilogue(gradOutput[offset], output[offset]);
 }
 
+template <int ILP, typename scalar_t, typename accscalar_t, typename outscalar_t, template<typename, typename, typename> class Epilogue>
+__global__ void
+cunn_SoftMaxXEntropyBackward(
+    scalar_t *gradInput,
+    outscalar_t *output,
+    outscalar_t *gradOutput,
+    int64_t *labels,
+    const float smoothing,
+    int classes)
+{
+  gradInput += blockIdx.x * classes;
+  output += blockIdx.x * classes;
+
+  float smooth_positives = 1.0 - smoothing;
+  float smooth_negatives = smoothing / classes;
+  outscalar_t tmpGradOutput = gradOutput[blockIdx.x];
+  int64_t label = labels[blockIdx.x];
+
+
+  int offset = threadIdx.x;
+  int last = classes % (ILP * blockDim.x);
+  for (; offset < classes - last; offset += blockDim.x * ILP) {
+    outscalar_t tmpOutput[ILP];
+
+#pragma unroll
+    for (int j = 0; j < ILP; ++j) {
+      tmpOutput[j] = output[offset + j * blockDim.x];
+    }
+
+#pragma unroll
+    for (int j = 0; j < ILP; ++j)
+      gradInput[offset + j * blockDim.x] = tmpGradOutput * (std::exp(tmpOutput[j]) - 
+          static_cast<outscalar_t>((offset + j * blockDim.x == label) ? 1 : 0) *
+          smooth_positives - smooth_negatives);
+  }
+
+  for (; offset < classes; offset += blockDim.x)
+    gradInput[offset] = tmpGradOutput * (std::exp(output[offset]) - 
+        static_cast<outscalar_t>((offset == label) ? 1 : 0) *
+        smooth_positives - smooth_negatives);
+}
+
 
 
 
@@ -851,6 +893,61 @@ Tensor host_softmax_backward(const Tensor &grad_, const Tensor &output_, int64_t
   return gI;
 }
 
+template<template<typename, typename, typename> class Epilogue>
+Tensor host_softmax_xentropy_backward(
+    const at::Tensor &grad_loss,
+    const at::Tensor &logprobs,
+    const at::Tensor &labels,
+    const float smoothing,
+    bool half_to_float) {
+  int64_t dim = 1;
+  Tensor gI = half_to_float ? at::empty_like(logprobs, logprobs.options().dtype(ScalarType::Half)) : at::empty_like(logprobs);
+  if (grad_loss.numel() == 0) {
+    return gI;
+  }
+  auto grad = grad_loss.contiguous();
+  static_assert(std::is_same<acc_type<at::Half, true>, float>::value, "accscalar_t for half should be float");
+  if (grad.dim() == 0) grad = grad.view(1);
+  AT_CHECK(dim >=0 && dim < logprobs.dim(), "dim must be non-negative and less than input dimensions");
+  auto output = logprobs.contiguous();
+  if (output.dim() == 0) output = output.view(1);
+  int64_t outer_size = 1;
+  int64_t dim_size = output.size(dim);
+  int64_t inner_size = 1;
+  for (int64_t i = 0; i < dim; ++i)
+    outer_size *= output.size(i);
+  for (int64_t i = dim + 1; i < output.dim(); ++i)
+    inner_size *= output.size(i);
+// See descriptions of kernels above.
+  cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+  AT_CHECK(inner_size == 1, "Currently only inner size 1 supported");
+
+  const int ILP = 2;
+  dim3 grid(outer_size);
+  dim3 block = SoftMax_getBlockSize(ILP, dim_size);
+  AT_DISPATCH_FLOATING_TYPES_AND_HALF(gI.type(), "host_softmax_xentropy_backward", [&] {
+  using accscalar_t = acc_type<scalar_t, true>;
+  if (!half_to_float) {
+      cunn_SoftMaxXEntropyBackward<ILP, scalar_t, accscalar_t, scalar_t, Epilogue>
+       <<<grid, block, block.x * sizeof(accscalar_t), stream>>>(
+          gI.data<scalar_t>(), output.data<scalar_t>(),
+          grad.data<scalar_t>(), labels.data<int64_t>(),
+          smoothing, dim_size
+  );
+  } else {
+      cunn_SoftMaxXEntropyBackward<ILP, scalar_t, accscalar_t, accscalar_t, Epilogue>
+       <<<grid, block, block.x * sizeof(accscalar_t), stream>>>(
+          gI.data<scalar_t>(), output.data<accscalar_t>(),
+          grad.data<accscalar_t>(), labels.data<int64_t>(),
+          smoothing, dim_size
+  );
+  }
+  });
+
+  THCudaCheck(cudaGetLastError());
+  return gI;
+}
+
 Tensor log_softmax_cuda(const Tensor &input, const int64_t dim, const bool half_to_float){
   return host_softmax<LogSoftMaxForwardEpilogue>(input, dim, half_to_float);
 }
@@ -880,10 +977,11 @@ std::vector<Tensor> softmax_xentropy_cuda(const Tensor &input, const Tensor &lab
   return host_softmax_xentropy<LogSoftMaxForwardEpilogue>(input, labels, smoothing, half_to_float);
 }
 
-Tensor softmax_xentropy_backward_cuda(const Tensor &grad, const Tensor &output, int64_t dim, const Tensor &input){
-  bool half_to_float = grad.type().scalarType() != input.type().scalarType();
-  if (half_to_float) {
-     AT_ASSERTM((grad.type().scalarType() == ScalarType::Float && input.type().scalarType() == ScalarType::Half), "expected input and grad types to match, or input to be at::Half and grad to be at::Float");
-  }
-  return host_softmax_backward<LogSoftMaxBackwardEpilogue>(grad, output, dim, half_to_float);
+at::Tensor softmax_xentropy_backward_cuda(
+    const at::Tensor &grad_loss,
+    const at::Tensor &logprobs,
+    const at::Tensor &labels,
+    const float smoothing,
+    const bool half_to_float) {
+  return host_softmax_xentropy_backward<LogSoftMaxBackwardEpilogue>(grad_loss, logprobs, labels, smoothing, half_to_float);
 }
