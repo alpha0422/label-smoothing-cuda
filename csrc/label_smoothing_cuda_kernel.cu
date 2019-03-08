@@ -605,7 +605,7 @@ cunn_SoftMaxXEntropyForward(
   // calculate per element loss with label smoothing
   // reserve max + log_sum_exp for bprop
   if (threadIdx.x == 0) {
-    accscalar_t log_prob = epilogue(input[label]);
+    accscalar_t log_prob = epilogue(static_cast<accscalar_t>(input[label]));
     losses[blockIdx.x] = (max_k + std::log(sumAll) - sum_k / classes) \
       * smoothing - log_prob * (1 - smoothing);
     max_log_sum_exp[blockIdx.x] = max_k + std::log(sumAll);
@@ -670,16 +670,16 @@ cunn_SoftMaxXEntropyBackward(
   float smooth_negatives = smoothing / classes;
   outscalar_t tmpGradOutput = gradOutput[blockIdx.x];
   int64_t label = labels[blockIdx.x];
-  accscalar_t coeff = max_log_sum_exp[blockIdx.x];
+  outscalar_t coeff = max_log_sum_exp[blockIdx.x];
 
   int offset = threadIdx.x;
   int last = classes % (ILP * blockDim.x);
   for (; offset < classes - last; offset += blockDim.x * ILP) {
-    scalar_t tmpLogits[ILP];
+    accscalar_t tmpLogits[ILP];
 
 #pragma unroll
     for (int j = 0; j < ILP; ++j) {
-      tmpLogits[j] = logits[offset + j * blockDim.x];
+      tmpLogits[j] = static_cast<accscalar_t>(logits[offset + j * blockDim.x]);
     }
 
 #pragma unroll
@@ -691,7 +691,8 @@ cunn_SoftMaxXEntropyBackward(
   }
 
   for (; offset < classes; offset += blockDim.x)
-    gradInput[offset] = tmpGradOutput * (std::exp(logits[offset] - coeff) - 
+    gradInput[offset] = tmpGradOutput * (std::exp(
+        static_cast<accscalar_t>(logits[offset]) - coeff) - 
         static_cast<outscalar_t>((offset == label) ? 1 : 0) *
         smooth_positives - smooth_negatives);
 }
