@@ -57,8 +57,8 @@ if __name__ == '__main__':
 
     # Set label smoothing configuration
     smoothing, padding_idx = 0.1, 0
-    #N, T, H = 32, 33, 32320
-    N, T, H = 128, 74, 32320
+    N, T, H = 32, 33, 32320
+    #N, T, H = 128, 74, 32320
     iters = 1000
     
     # Initialize data

@@ -12,10 +12,10 @@ std::vector<at::Tensor> softmax_xentropy_cuda(
 
 at::Tensor softmax_xentropy_backward_cuda(
     const at::Tensor &grad_loss,
-    const at::Tensor &logprobs,
+    const at::Tensor &logits,
+    const at::Tensor &max_log_sum_exp,
     const at::Tensor &labels,
-    const float smoothing,
-    const bool half_to_float);
+    const float smoothing);
 
 // C++ interface
 
@@ -36,15 +36,15 @@ std::vector<at::Tensor> softmax_xentropy_forward(
 
 at::Tensor softmax_xentropy_backward(
     const at::Tensor &grad_loss,
-    const at::Tensor &logprobs,
+    const at::Tensor &logits,
+    const at::Tensor &max_log_sum_exp,
     const at::Tensor &labels,
-    const float smoothing,
-    const bool half_to_float) {
+    const float smoothing)  {
     CHECK_INPUT(grad_loss);
-    CHECK_INPUT(logprobs);
+    CHECK_INPUT(max_log_sum_exp);
     CHECK_INPUT(labels);
 
-    return softmax_xentropy_backward_cuda(grad_loss, logprobs, labels, smoothing, half_to_float);
+    return softmax_xentropy_backward_cuda(grad_loss, logits, max_log_sum_exp, labels, smoothing);
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {

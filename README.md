@@ -18,14 +18,14 @@ On DGX1V, we observed 3x ~ 4x performance improvement:
 ```console
 # N, T, H = 32, 33, 32320
 $ python test/test.py
-Opt time 0.79 s elapsed for 1000 iterations, norm 0.83447265625
-Raw time 3.19 s elapsed for 1000 iterations, norm 0.83447265625
+Opt time 0.46 s elapsed for 1000 iterations, norm 0.83447265625
+Raw time 3.16 s elapsed for 1000 iterations, norm 0.83447265625
 Norm difference check passed!
 
 # N, T, H = 128, 74, 32320
 $ python test/test.py
-Opt time 6.40 s elapsed for 1000 iterations, norm 0.62451171875
-Raw time 19.09 s elapsed for 1000 iterations, norm 0.62451171875
+Opt time 3.41 s elapsed for 1000 iterations, norm 0.62451171875 
+Raw time 19.18 s elapsed for 1000 iterations, norm 0.62451171875
 Norm difference check passed!
 ```
 
