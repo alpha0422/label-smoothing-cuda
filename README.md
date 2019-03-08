@@ -13,7 +13,7 @@ $ python test/test.py
 Performance
 -----------
 
-On DGX1V, we observed 3x ~ 4x performance improvement:
+On DGX1V, we observed 5.62x ~ 6.87x performance improvement:
 
 ```console
 # N, T, H = 32, 33, 32320
