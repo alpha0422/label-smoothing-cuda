@@ -18,5 +18,6 @@ setup(
     ],
     cmdclass={
         'build_ext': BuildExtension
-    }
+    },
+    test_suite="tests",
 )
