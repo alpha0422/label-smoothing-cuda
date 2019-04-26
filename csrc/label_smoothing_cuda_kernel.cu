@@ -339,6 +339,7 @@ blockReduce(AccumT* smem, AccumT val,
   AccumT warpVal = defaultVal;
 
   // First warp will perform per-warp reductions for the remaining warps
+  uint32_t mask = (((uint64_t)1) << (blockDim.x / 32)) - 1;
   if (threadIdx.x < 32) {
     int lane = threadIdx.x % 32;
     if (lane < blockDim.x / 32) {
@@ -346,6 +347,7 @@ blockReduce(AccumT* smem, AccumT val,
       for (int i = 0; i < 32; ++i) {
         warpVal = r(warpVal, smem[lane * 32 + i]);
       }
+      __syncwarp(mask);
       smem[lane] = warpVal;
     }
   }
@@ -391,6 +393,7 @@ blockReduce(AccumT* smem,
   AccumT warpVal2 = defaultVal2;
 
   // First warp will perform per-warp reductions for the remaining warps
+  uint32_t mask = (((uint64_t)1) << (blockDim.x / 32)) - 1;
   if (threadIdx.x < 32) {
     int lane = threadIdx.x % 32;
     if (lane < blockDim.x / 32) {
@@ -399,6 +402,7 @@ blockReduce(AccumT* smem,
         warpVal1 = r1(warpVal1, smem[lane * 32 + i]);
         warpVal2 = r2(warpVal2, smem[lane * 32 + i + blockDim.x]);
       }
+      __syncwarp(mask);
       smem[lane] = warpVal1;
       smem[lane + blockDim.x] = warpVal2;
     }
