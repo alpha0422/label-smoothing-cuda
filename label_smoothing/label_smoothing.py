@@ -16,7 +16,7 @@ class SoftmaxCrossEntropyLoss(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_loss):
-        logits, max_log_sum_exp, labels, smoothing, padding_idx = ctx.saved_variables
+        logits, max_log_sum_exp, labels, smoothing, padding_idx = ctx.saved_tensors
 
         if not grad_loss.is_contiguous():
             grad_loss = grad_loss.contiguous()
