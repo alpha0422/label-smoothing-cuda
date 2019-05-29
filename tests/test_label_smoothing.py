@@ -42,8 +42,9 @@ class LabelSmoothingTest(unittest.TestCase):
         logits = torch.randn((N*T, H), dtype=torch.half, device='cuda',
             requires_grad=True)
         labels = torch.randint(0, H, [N*T], device='cuda')
-        for i in random.sample(range(N*T), N*T//6):
-            labels[i] = padding_idx
+        if 0 <= padding_idx < H:
+            for i in random.sample(range(N*T), N*T//6):
+                labels[i] = padding_idx
         half_to_float = (logits.dtype == torch.half)
 
         return logits, labels, half_to_float
@@ -93,7 +94,7 @@ class LabelSmoothingTest(unittest.TestCase):
     def test_label_smoothing_perf(self):
         # Set label smoothing configuration
         smoothing, padding_idx = 0.1, 0
-        N, T, H = 128, 38, 32320
+        N, T, H = 32, 38, 32320
         iters = 1000
         loss_func = label_smoothing.SoftmaxCrossEntropyLoss.apply
         print()
@@ -114,6 +115,41 @@ class LabelSmoothingTest(unittest.TestCase):
             time.time() - ts, iters, logits.grad.norm()))
             
         # Run optimized softmax cross entropy with label smoothing
+        torch.cuda.synchronize()
+        ts = time.time()
+        for i in range(iters):
+            logits.grad = None
+            losses = loss_func(logits, labels, smoothing, padding_idx, half_to_float)
+            loss = losses.sum() / N
+            loss.backward()
+        torch.cuda.synchronize()
+        print("Opt time {:.2f} s elapsed for {} iterations, norm {:.4f}".format(
+            time.time() - ts, iters, logits.grad.norm()))
+
+    def test_softmax_xentropy_perf(self):
+        smoothing, padding_idx = 0, -1
+        N, T, H = 32, 38, 32320
+        iters = 1000
+        print()
+
+        logits, labels, half_to_float = self.gen_test_inputs(
+            N, T, H, smoothing, padding_idx)
+    
+        # Run original softmax cross entropy
+        loss_func = torch.nn.CrossEntropyLoss(reduction='none')
+        torch.cuda.synchronize()
+        ts = time.time()
+        for i in range(iters):
+            logits.grad = None
+            losses = loss_func(logits, labels)
+            loss = losses.sum() / N
+            loss.backward()
+        torch.cuda.synchronize()
+        print("Raw time {:.2f} s elapsed for {} iterations, norm {:.4f}".format(
+            time.time() - ts, iters, logits.grad.norm()))
+            
+        # Run optimized softmax cross entropy
+        loss_func = label_smoothing.SoftmaxCrossEntropyLoss.apply
         torch.cuda.synchronize()
         ts = time.time()
         for i in range(iters):
