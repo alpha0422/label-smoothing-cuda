@@ -58,9 +58,10 @@ class LabelSmoothingTest(unittest.TestCase):
     def test_label_smoothing_function(self):
         # Set label smoothing configuration
         smoothing, padding_idx = 0.1, 0
-        N, T, H = 128, 74, 32320
+        N, T, H = 128, 38, 32320
         iters = 10
         loss_func = label_smoothing.SoftmaxCrossEntropyLoss.apply
+        print()
 
         for i in range(iters):
             logits, labels, half_to_float = self.gen_test_inputs(
@@ -92,7 +93,7 @@ class LabelSmoothingTest(unittest.TestCase):
     def test_label_smoothing_perf(self):
         # Set label smoothing configuration
         smoothing, padding_idx = 0.1, 0
-        N, T, H = 128, 74, 32320
+        N, T, H = 128, 38, 32320
         iters = 1000
         loss_func = label_smoothing.SoftmaxCrossEntropyLoss.apply
         print()
