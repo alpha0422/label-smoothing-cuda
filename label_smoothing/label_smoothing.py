@@ -6,7 +6,8 @@ class SoftmaxCrossEntropyLoss(torch.autograd.Function):
     def forward(ctx, logits, labels, smoothing=0.0, padding_idx=0, half_to_float=False):
         losses, max_log_sum_exp = label_smoothing_cuda.forward(
             logits, labels, smoothing, half_to_float)
-        losses.masked_fill_(labels==padding_idx, 0)
+        if 0 <= padding_idx < logits.size(-1):
+            losses.masked_fill_(labels==padding_idx, 0)
 
         ctx.save_for_backward(logits, max_log_sum_exp, labels,
             torch.FloatTensor([smoothing]),
