@@ -69,6 +69,14 @@ struct Max {
   }
 };
 
+template<typename T>
+struct SumExpOnline {
+  __device__ __forceinline__ T operator()(T a, T b, T ma, T mb) const {
+    T m = ::max(ma, mb);
+    return a * std::exp(ma - m) + b * std::exp(mb - m);
+  }
+};
+
 
 ////////////////////////////////////////////////////////////////////////////////
 // Regular kernel (fast when dim_size is large; requires inner_size == 1)
@@ -150,7 +158,7 @@ blockReduce(AccumT* smem, AccumT val,
   return smem[0];
 }
 
-template <template<typename> class Reduction1, template<typename> class Reduction2, typename AccumT>
+template <template<typename> class Reduction1, template<typename> class Reduction2, template<typename> class Reduction3, typename AccumT>
 __device__ __forceinline__ void
 blockReduce(AccumT* smem,
             AccumT* reducVal1,
@@ -160,18 +168,24 @@ blockReduce(AccumT* smem,
             AccumT* reducVal2,
             AccumT val2,
             const Reduction2<AccumT>& r2,
-            AccumT defaultVal2)
+            AccumT defaultVal2,
+            AccumT* reducVal3,
+            AccumT val3,
+            const Reduction3<AccumT>& r3,
+            AccumT defaultVal3)
 {
   // To avoid RaW races from chaining blockReduce calls together, we need a sync here
   __syncthreads();
 
   smem[threadIdx.x] = val1;
   smem[blockDim.x + threadIdx.x] = val2;
+  smem[2*blockDim.x + threadIdx.x] = val3;
 
   __syncthreads();
 
   AccumT warpVal1 = defaultVal1;
   AccumT warpVal2 = defaultVal2;
+  AccumT warpVal3 = defaultVal3;
 
   // First warp will perform per-warp reductions for the remaining warps
   uint32_t mask = (((uint64_t)1) << (blockDim.x / 32)) - 1;
@@ -180,12 +194,15 @@ blockReduce(AccumT* smem,
     if (lane < blockDim.x / 32) {
 #pragma unroll
       for (int i = 0; i < 32; ++i) {
+        warpVal3 = r3(warpVal3, smem[lane * 32 + i + 2 * blockDim.x],
+          warpVal1, smem[lane * 32 + i]);
         warpVal1 = r1(warpVal1, smem[lane * 32 + i]);
         warpVal2 = r2(warpVal2, smem[lane * 32 + i + blockDim.x]);
       }
       __syncwarp(mask);
       smem[lane] = warpVal1;
       smem[lane + blockDim.x] = warpVal2;
+      smem[lane + 2 * blockDim.x] = warpVal3;
     }
   }
 
@@ -194,20 +211,25 @@ blockReduce(AccumT* smem,
   // First thread will perform a reduction of the above per-warp reductions
   AccumT blockVal1 = defaultVal1;
   AccumT blockVal2 = defaultVal2;
+  AccumT blockVal3 = defaultVal3;
 
   if (threadIdx.x == 0) {
     for (int i = 0; i < blockDim.x / 32; ++i) {
+      blockVal3 = r3(blockVal3, smem[i + 2 * blockDim.x],
+        blockVal1, smem[i]);
       blockVal1 = r1(blockVal1, smem[i]);
       blockVal2 = r2(blockVal2, smem[i + blockDim.x]);
     }
     smem[0] = blockVal1;
     smem[blockDim.x] = blockVal2;
+    smem[2 * blockDim.x] = blockVal3;
   }
 
   // Sync and broadcast
   __syncthreads();
   *reducVal1 = smem[0];
   *reducVal2 = smem[blockDim.x];
+  *reducVal3 = smem[2 * blockDim.x];
   __syncthreads();
 }
 
@@ -242,8 +264,7 @@ ilpReduce(T* data,
 
   return threadVal;
 }
-
-template <template<typename, typename> class Reduction1, template<typename, typename> class Reduction2, int ILP, typename T, typename AccumT>
+template <template<typename, typename> class Reduction1, template<typename, typename> class Reduction2, template<typename> class Reduction3, int ILP, typename T, typename AccumT>
 __device__ __forceinline__ void
 ilpReduce(T* data,
           int size,
@@ -252,10 +273,14 @@ ilpReduce(T* data,
           AccumT defaultVal1,
           AccumT* reducVal2,
           const Reduction2<T, AccumT>& r2,
-          AccumT defaultVal2)
+          AccumT defaultVal2,
+          AccumT* reducVal3,
+          const Reduction3<AccumT>& r3,
+          AccumT defaultVal3)
 {
   AccumT threadVal1 = defaultVal1;
   AccumT threadVal2 = defaultVal2;
+  AccumT threadVal3 = defaultVal3;
   int offset = threadIdx.x;
 
   int last = size % (ILP * blockDim.x);
@@ -270,6 +295,7 @@ ilpReduce(T* data,
 
 #pragma unroll
     for (int j = 0; j < ILP; ++j) {
+      threadVal3 = r3(threadVal3, defaultVal3, threadVal1, tmp[j]);
       threadVal1 = r1(threadVal1, tmp[j]);
       threadVal2 = r2(threadVal2, tmp[j]);
     }
@@ -277,12 +303,14 @@ ilpReduce(T* data,
 
   // Epilogue
   for (; offset < size; offset += blockDim.x) {
+    threadVal3 = r3(threadVal3, defaultVal3, threadVal1, data[offset]);
     threadVal1 = r1(threadVal1, data[offset]);
     threadVal2 = r2(threadVal2, data[offset]);
   }
 
   *reducVal1 = threadVal1;
   *reducVal2 = threadVal2;
+  *reducVal3 = threadVal3;
 }
 
 template <int ILP, typename scalar_t, typename accscalar_t, typename outscalar_t, template <typename, typename, typename> class Epilogue>
@@ -304,26 +332,24 @@ cunn_SoftMaxXEntropyForward(
 
   int64_t label = labels[blockIdx.x];
 
-  // find the max and sum
-  accscalar_t threadMax, threadSum, max_k, sum_k;
-  ilpReduce<MaxFloat, AddFloat, ILP, scalar_t, accscalar_t>(
+  // find the max, sum, and sum exp
+  accscalar_t threadMax, threadSum, threadExp, max_k, sum_k, sumAll;
+  ilpReduce<MaxFloat, AddFloat, SumExpOnline, ILP, scalar_t, accscalar_t>(
       input, classes,
       &threadMax, MaxFloat<scalar_t, accscalar_t>(),
       -at::numeric_limits<accscalar_t>::max(),
       &threadSum, AddFloat<scalar_t, accscalar_t>(),
-      static_cast<accscalar_t>(0));
-  blockReduce<Max, Add, accscalar_t>(
+      static_cast<accscalar_t>(0),
+      &threadExp, SumExpOnline<accscalar_t>(),
+      static_cast<accscalar_t>(1));
+  blockReduce<Max, Add, SumExpOnline, accscalar_t>(
       sdata,
       &max_k, threadMax, Max<accscalar_t>(),
       -at::numeric_limits<accscalar_t>::max(),
       &sum_k, threadSum, Add<accscalar_t>(),
-      static_cast<accscalar_t>(0));
-
-  // reduce all values
-  accscalar_t threadExp = ilpReduce<SumExpFloat, ILP, scalar_t, accscalar_t>(
-      input, classes, SumExpFloat<scalar_t, accscalar_t>(max_k), static_cast<accscalar_t>(0));
-  accscalar_t sumAll = blockReduce<Add, accscalar_t>(
-      sdata, threadExp, Add<accscalar_t>(), static_cast<accscalar_t>(0));
+      static_cast<accscalar_t>(0),
+      &sumAll, threadExp, SumExpOnline<accscalar_t>(),
+      static_cast<accscalar_t>(1));
 
   Epilogue<scalar_t, accscalar_t, outscalar_t> epilogue(max_k, sumAll);
 
@@ -402,7 +428,6 @@ std::vector<Tensor> host_softmax_xentropy(
   static_assert(std::is_same<acc_type<at::Half, true>, float>::value ||
     std::is_same<acc_type<at::Half, true>, double>::value,
     "accscalar_t for half should be float or double");
-
   AT_ASSERTM(input.dim() == 2, "Currently only 2 dim input supported");
   AT_ASSERTM(labels_.dim() == 1, "Labels should be 1 dimensional");
   AT_ASSERTM(input.size(0) == labels_.size(0), "Input and label should have same number of examples");
@@ -411,7 +436,6 @@ std::vector<Tensor> host_softmax_xentropy(
   const int64_t dim = 1;
   int64_t outer_size = 1;
   int64_t dim_size = input.size(dim);
-
   int64_t inner_size = 1;
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
   for (int64_t i = 0; i < dim; ++i)
@@ -425,20 +449,19 @@ std::vector<Tensor> host_softmax_xentropy(
   const int ILP = 2;
   dim3 grid(outer_size);
   dim3 block = SoftMax_getBlockSize(ILP, dim_size);
-
   using namespace at;
   AT_DISPATCH_FLOATING_TYPES_AND_HALF(input.type(), "host_softmax_xentropy", [&] {
   using accscalar_t = at::acc_type<scalar_t, true>;
   if (!half_to_float) {
       cunn_SoftMaxXEntropyForward<ILP, scalar_t, accscalar_t, scalar_t, Epilogue>
-        <<<grid, block, 2 * block.x * sizeof(accscalar_t), stream>>>(
+        <<<grid, block, 3 * block.x * sizeof(accscalar_t), stream>>>(
           losses.data<accscalar_t>(), max_log_sum_exp.data<scalar_t>(),
           input.data<scalar_t>(), labels_.data<int64_t>(),
           dim_size, smoothing
       );
   } else {
       cunn_SoftMaxXEntropyForward<ILP, scalar_t, accscalar_t, accscalar_t, Epilogue>
-        <<<grid, block, 2 * block.x * sizeof(accscalar_t), stream>>>(
+        <<<grid, block, 3 * block.x * sizeof(accscalar_t), stream>>>(
           losses.data<accscalar_t>(), max_log_sum_exp.data<accscalar_t>(),
           input.data<scalar_t>(), labels_.data<int64_t>(),
           dim_size, smoothing
@@ -472,7 +495,6 @@ Tensor host_softmax_xentropy_backward(
     std::is_same<acc_type<at::Half, true>, double>::value,
     "accscalar_t for half should be float or double");
   if (grad.dim() == 0) grad = grad.view(1);
-  
   AT_ASSERTM(logits_.dim() == 2, "Currently only 2 dim input supported");
   AT_ASSERTM(labels.dim() == 1, "Labels should be 1 dimensional");
   AT_ASSERTM(logits_.numel() > 0, "Number of classes in input should not be 0");
