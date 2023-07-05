@@ -1,5 +1,10 @@
 A high performance and minimal memory requirement CUDA implementation of label smoothing with cross entropy loss for PyTorch.
 
+Notice
+------
+
+This repo has been merged with NVIDIA APEX at [apex/contrib/xentropy](https://github.com/NVIDIA/apex/tree/master/apex/contrib/xentropy), please use the APEX version instead. This repo will no longer be maintained.
+
 How to use
 ----------
 
